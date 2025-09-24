@@ -1,0 +1,70 @@
+[
+  {
+    "id": "old-scratch",
+    "name": "Old Scratch Pizza",
+    "category": [
+      "Pizza",
+      "Bar"
+    ],
+    "address": "812 S Patterson Blvd, Dayton, OH",
+    "lat": 39.7459,
+    "lng": -84.1893,
+    "phone": "(937) 123-4567",
+    "website": "https://example.com/oldscratch",
+    "instagram": "@oldscratch",
+    "hours": null,
+    "accessibility": {
+      "wheelchair": true,
+      "outdoorSeating": true
+    },
+    "collab": {
+      "partnerIds": [
+        "neon-theatre"
+      ],
+      "popRule": "Receipt at Old Scratch \u21d2 15% off at The Neon within 24h (and vice versa)",
+      "code": "NEON",
+      "status": "active",
+      "startDate": "2025-09-01"
+    },
+    "media": {
+      "logoUrl": "",
+      "photos": []
+    },
+    "lastVerifiedAt": "2025-09-15",
+    "is_public": true
+  },
+  {
+    "id": "third-perk",
+    "name": "Third Perk Coffeehouse",
+    "category": [
+      "Coffee/Tea",
+      "Dessert"
+    ],
+    "address": "146 E 3rd St, Dayton, OH",
+    "lat": 39.76,
+    "lng": -84.1889,
+    "phone": "(937) 555-0199",
+    "website": "https://example.com/thirdperk",
+    "instagram": "@thirdperk",
+    "hours": null,
+    "accessibility": {
+      "wheelchair": true,
+      "outdoorSeating": false
+    },
+    "collab": {
+      "partnerIds": [
+        "miamisburg-movies"
+      ],
+      "popRule": "Coffee receipt \u21d2 free small popcorn within 24h",
+      "code": "POPCORN",
+      "status": "paused",
+      "startDate": "2025-08-01"
+    },
+    "media": {
+      "logoUrl": "",
+      "photos": []
+    },
+    "lastVerifiedAt": "2025-09-10",
+    "is_public": true
+  }
+]
