@@ -1,9 +1,22 @@
+'use client';
 
 import dynamic from 'next/dynamic'
 import { useEffect, useMemo, useState } from 'react'
 import type { Map } from 'leaflet'
 import { haversineDistance } from '../lib/geo'
 import cn from 'classnames'
+import L from 'leaflet';
+const DefaultIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowSize: [41, 41],
+});
+L.Marker.prototype.options.icon = DefaultIcon;
+
 
 const MapContainer = dynamic(() => import('react-leaflet').then(m => m.MapContainer), { ssr: false })
 const TileLayer = dynamic(() => import('react-leaflet').then(m => m.TileLayer), { ssr: false })
@@ -101,7 +114,13 @@ export default function MapView({ partners }:{partners:Partner[]}){
 
       <div className="card">
         <div className="map" id="map">
-          <MapContainer center={[center.lat, center.lng]} zoom={12} style={{height:'100%', width:'100%'}} whenCreated={setMap}>
+          <MapContainer
+  center={[center.lat, center.lng]}
+  zoom={12}
+  style={{ height: '100%', width: '100%' }}
+  whenReady={(e) => setMap(e.target as Map)}
+>
+
             <TileLayer
               attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
