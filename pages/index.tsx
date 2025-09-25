@@ -36,3 +36,9 @@ export default function Home(){
     </>
   )
 }
+// pages/index.tsx
+
+export async function getServerSideProps() {
+  // No data needed at build time; render on request to avoid static prerender issues
+  return { props: {} };
+}
