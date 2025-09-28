@@ -3,6 +3,46 @@
 import Head from 'next/head';
 import { useEffect, useState } from 'react';
 import { supabase } from '../lib/supabaseClient';
+import dynamic from 'next/dynamic';
+const AdminMiniMap = dynamic(() => import('../components/AdminMiniMap'), { ssr: false });
+
+
+function normalizeCoordinates(inputLat: string, inputLng: string) {
+  let lat = parseFloat((inputLat || '').trim());
+  let lng = parseFloat((inputLng || '').trim());
+<div style={{ gridColumn:'1 / span 2' }}>
+  <button className="btn secondary" onClick={geocodeAddress}>Auto-Fill Lat/Lng from Address</button>
+  <span className="small" style={{ marginLeft: 8, opacity: .8 }}>Uses OpenStreetMap Nominatim</span>
+</div>
+
+
+  // Basic validity
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    throw new Error('Latitude/Longitude must be numbers (decimal degrees).');
+  }
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new Error('Latitude must be between -90 and 90, longitude between -180 and 180.');
+  }
+
+  // USA longitudes should be negative; fix common mistake
+  if (lng > 0) lng = -lng;
+
+  // Detect obvious swaps: lat looks like a longitude magnitude and lng like a latitude
+  if (Math.abs(lat) > 60 && Math.abs(lng) < 60) {
+    const tmp = lat;
+    lat = lng;
+    lng = tmp;
+    // Re-apply USA correction
+    if (lng > 0) lng = -lng;
+  }
+
+  // Dayton-ish sanity snap (optional safety): warn if far away
+  const DAYTON = { lat: 39.7589, lng: -84.1916 };
+  const dLat = Math.abs(lat - DAYTON.lat);
+  const dLng = Math.abs(lng - DAYTON.lng);
+  const obviouslyFar = dLat > 10 || dLng > 10; // ~ >600 miles
+  return { lat, lng, obviouslyFar };
+}
 
 type Partner = {
   id: string;
@@ -74,27 +114,145 @@ export default function Admin() {
     setPartners((data || []) as any);
   }
 
-  async function savePartner() {
+async function savePartner() {
+  try {
+    // 1) Coordinates: use provided lat/lng or geocode from address if blank
+    let lat: number;
+    let lng: number;
+
+    const hasLatLng =
+      form.lat != null && String(form.lat).trim() !== '' &&
+      form.lng != null && String(form.lng).trim() !== '';
+
+    if (hasLatLng) {
+      // Manual entry
+      const norm = normalizeCoordinates(form.lat, form.lng);
+      lat = norm.lat;
+      lng = norm.lng;
+    } else if (form.address && String(form.address).trim() !== '') {
+      // Geocode from address
+      const geo = await geocodeAddress(form.address);
+      if (!geo) {
+        alert('Could not find coordinates for that address. Please enter lat/lng manually.');
+        return;
+      }
+      const norm = normalizeCoordinates(String(geo.lat), String(geo.lng));
+      lat = norm.lat;
+      lng = norm.lng;
+    } else {
+      alert('Please provide either (1) an address to geocode or (2) latitude & longitude.');
+      return;
+    }
+
+    // 2) Build payload (adjust `category` shape to match your DB type)
     const payload: any = {
       name: form.name,
       address: form.address,
-      lat: parseFloat(form.lat),
-      lng: parseFloat(form.lng),
-      category: [form.category],
+      lat,
+      lng,
+      category: Array.isArray(form.category) ? form.category : [form.category], // text[] in DB
       website: form.website || null,
       collab: {
         partnerIds: [],
-        popRule: form.popRule,
-        code: form.code,
-        status: form.status,
+        popRule: form.popRule || '',
+        code: form.code || '',
+        status: form.status || 'active',
       },
       is_public: !!form.is_public,
     };
+
+    // 3) Insert
     const { error } = await supabase.from('partners').insert(payload);
-    if (error) return alert(error.message);
-    resetForm();
+    if (error) throw error;
+
+    // 4) Reset form & reload
+    setForm({
+      name: '',
+      address: '',
+      lat: '',
+      lng: '',
+      category: 'Coffee/Tea',
+      website: '',
+      popRule: '',
+      code: '',
+      status: 'active',
+      is_public: true,
+    });
     await loadPartners();
+  } catch (e: any) {
+    console.error(e);
+    alert(e.message || 'Failed to save partner.');
   }
+}
+
+
+async function updatePartner() {
+  if (!editingId) return;
+  try {
+    let lat: number;
+    let lng: number;
+
+    const hasLatLng =
+      form.lat != null && String(form.lat).trim() !== '' &&
+      form.lng != null && String(form.lng).trim() !== '';
+
+    if (hasLatLng) {
+      const norm = normalizeCoordinates(form.lat, form.lng);
+      lat = norm.lat;
+      lng = norm.lng;
+    } else if (form.address && String(form.address).trim() !== '') {
+      const geo = await geocodeAddress(form.address);
+      if (!geo) {
+        alert('Could not find coordinates for that address. Please enter lat/lng manually.');
+        return;
+      }
+      const norm = normalizeCoordinates(String(geo.lat), String(geo.lng));
+      lat = norm.lat;
+      lng = norm.lng;
+    } else {
+      alert('Please provide either (1) an address to geocode or (2) latitude & longitude.');
+      return;
+    }
+
+    const payload: any = {
+      name: form.name,
+      address: form.address,
+      lat,
+      lng,
+      category: Array.isArray(form.category) ? form.category : [form.category],
+      website: form.website || null,
+      collab: {
+        partnerIds: [],
+        popRule: form.popRule || '',
+        code: form.code || '',
+        status: form.status || 'active',
+      },
+      is_public: !!form.is_public,
+    };
+
+    const { error } = await supabase.from('partners').update(payload).eq('id', editingId);
+    if (error) throw error;
+
+    setEditingId(null);
+    setForm({
+      name: '',
+      address: '',
+      lat: '',
+      lng: '',
+      category: 'Coffee/Tea',
+      website: '',
+      popRule: '',
+      code: '',
+      status: 'active',
+      is_public: true,
+    });
+    await loadPartners();
+  } catch (e: any) {
+    console.error(e);
+    alert(e.message || 'Failed to update partner.');
+  }
+}
+
 
   async function toggleStatus(p: Partner) {
     const next =
@@ -111,6 +269,37 @@ export default function Admin() {
     if (error) return alert(error.message);
     await loadPartners();
   }
+async function geocodeAddress(address: string): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const q = encodeURIComponent(address + ', Dayton, Ohio'); // bias locally; adjust as needed
+    const res = await fetch(`https://nominatim.openstreetmap.org/search?q=${q}&format=json&limit=1`, {
+      headers: { 'Accept': 'application/json' },
+    });
+    const data = await res.json();
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return { lat: parseFloat(data[0].lat), lng: parseFloat(data[0].lon) };
+  } catch (e) {
+    console.error('Geocoding failed', e);
+    return null;
+  }
+}
+
+function normalizeCoordinates(inputLat?: string, inputLng?: string) {
+  let lat = inputLat != null && inputLat !== '' ? parseFloat(String(inputLat).trim()) : NaN;
+  let lng = inputLng != null && inputLng !== '' ? parseFloat(String(inputLng).trim()) : NaN;
+
+  if (Number.isNaN(lat) || Number.isNaN(lng)) {
+    throw new Error('Latitude/Longitude must be numbers (decimal degrees).');
+  }
+  if (Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+    throw new Error('Latitude must be between -90 and 90, longitude between -180 and 180.');
+  }
+  // USA safeguard: longitude should be negative
+  if (lng > 0) lng = -lng;
+
+  return { lat, lng };
+}
+
 
   // ---- New: begin edit / update / hide / delete
   function beginEdit(p: Partner) {
@@ -375,6 +564,16 @@ export default function Admin() {
               </button>
             )}
           </div>
+          {/* Live mini map preview */}
+<div style={{ marginTop: '1rem' }}>
+  <AdminMiniMap
+    lat={form.lat ? parseFloat(form.lat) : undefined}
+    lng={form.lng ? parseFloat(form.lng) : undefined}
+    name={form.name}
+    address={form.address}
+  />
+</div>
+
         </div>
 
         <div className="card">
