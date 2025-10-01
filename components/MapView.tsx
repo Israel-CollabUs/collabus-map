@@ -1,8 +1,34 @@
-'use client';
+import { useEffect, useMemo, useRef } from 'react';
+import {
+  MapContainer,
+  TileLayer,
+  Marker,
+  Popup,
+  Circle,
+  Polyline,
+  useMap,
+  useMapEvent,
+} from 'react-leaflet';
+import type { Map } from 'leaflet';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import type { Map, Marker as LeafletMarker } from 'leaflet';
-import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
+// Avoid SSR “window is not defined” for leaflet icon setup
+let L: any = null;
+if (typeof window !== 'undefined') {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  L = require('leaflet');
+
+  // Default marker icon (CDN images)
+  const DefaultIcon = L.icon({
+    iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+    shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+    iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+    iconSize: [25, 41],
+    iconAnchor: [12, 41],
+    popupAnchor: [1, -34],
+    shadowSize: [41, 41],
+  });
+  if (L && L.Marker) L.Marker.prototype.options.icon = DefaultIcon;
+}
 
 type Partner = {
   id: string;
@@ -17,311 +43,178 @@ type Partner = {
 
 type LatLng = { lat: number; lng: number };
 
-function statusColor(s: string) {
-  switch (s) {
-    case 'active':
-      return '#16a34a';
-    case 'paused':
-      return '#ca8a04';
-    case 'ended':
-      return '#991b1b';
-    default:
-      return '#334155';
-  }
+type Edge = {
+  id: string;
+  collabId: string;
+  color?: string | null;
+  a: LatLng & { id: string; name: string };
+  b: LatLng & { id: string; name: string };
+  popupHtml: string;
+};
+
+function milesToMeters(mi: number) {
+  return mi * 1609.34;
 }
 
-function directionsUrl(p: Partner) {
-  return `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
-    `${p.lat},${p.lng}`
-  )}`;
+function useFocusEffect(mapRef: React.MutableRefObject<Map | null>, target?: LatLng | null) {
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !target) return;
+    map.setView([target.lat, target.lng], Math.max(map.getZoom(), 15), { animate: true });
+  }, [target, mapRef]);
 }
 
-function milesBetween(a: LatLng, b: LatLng) {
-  const toRad = (v: number) => (v * Math.PI) / 180;
-  const Rm = 3958.8;
-  const dLat = toRad(b.lat - a.lat);
-  const dLng = toRad(b.lng - a.lng);
-  const lat1 = toRad(a.lat);
-  const lat2 = toRad(b.lat);
-  const h =
-    Math.sin(dLat / 2) ** 2 +
-    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
-  return 2 * Rm * Math.asin(Math.min(1, Math.sqrt(h)));
+function MapClickClosePopup() {
+  const map = useMap();
+  useMapEvent('click', () => {
+    map.closePopup();
+  });
+  return null;
 }
 
 export default function MapView({
   partners,
-  userLocation = null,
-  radiusMiles = 10,
+  userLocation,
+  radiusMiles,
+  focusPartnerId,
+  onPartnerClick,
+  collabEdges,
+  showCollabs,
 }: {
   partners: Partner[];
   userLocation?: LatLng | null;
   radiusMiles?: number;
+  focusPartnerId?: string | null;
+  onPartnerClick?: (id: string) => void;
+  collabEdges?: Edge[];
+  showCollabs?: boolean;
 }) {
-  const [map, setMap] = useState<Map | null>(null);
   const mapRef = useRef<Map | null>(null);
-  const markerRefs = useRef<Record<string, LeafletMarker | null>>({});
 
-  // Client-only Leaflet icon patch
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      if (typeof window === 'undefined') return;
-      const L = await import('leaflet');
-      const DefaultIcon = L.icon({
-        iconUrl:
-          'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
-        shadowUrl:
-          'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
-        iconRetinaUrl:
-          'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
-        iconSize: [25, 41],
-        iconAnchor: [12, 41],
-        popupAnchor: [1, -34],
-        shadowSize: [41, 41],
-      });
-      if (mounted) {
-        // @ts-expect-error leaflet prototype patch
-        L.Marker.prototype.options.icon = DefaultIcon;
-      }
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
+  // Compute center: prioritize user location, else average of markers, else Dayton
+  const center = useMemo<LatLng>(() => {
+    if (userLocation) return userLocation;
+    if (partners.length > 0) {
+      const avgLat = partners.reduce((s, p) => s + p.lat, 0) / partners.length;
+      const avgLng = partners.reduce((s, p) => s + p.lng, 0) / partners.length;
+      return { lat: avgLat, lng: avgLng };
+    }
+    return { lat: 39.7589, lng: -84.1916 }; // Dayton fallback
+  }, [userLocation, partners]);
 
-  // Filter & sort partners (by distance if userLocation given)
-  const visiblePartners = useMemo(() => {
-    const base = (partners || []).filter(
-      (p) =>
-        p.is_public &&
-        typeof p.lat === 'number' &&
-        !Number.isNaN(p.lat) &&
-        typeof p.lng === 'number' &&
-        !Number.isNaN(p.lng)
-    );
-    if (!userLocation) return base;
-    return base
-      .map((p) => ({
-        ...p,
-        _dist: milesBetween(userLocation, { lat: p.lat, lng: p.lng }),
-      }))
-      .filter((p: any) => p._dist <= radiusMiles)
-      .sort((a: any, b: any) => a._dist - b._dist);
-  }, [partners, userLocation, radiusMiles]);
+  // When focusPartnerId changes, pan/zoom to it
+  const focusTarget = useMemo<LatLng | null>(() => {
+    if (!focusPartnerId) return null;
+    const p = partners.find((x) => x.id === focusPartnerId);
+    return p ? { lat: p.lat, lng: p.lng } : null;
+  }, [focusPartnerId, partners]);
 
-  const defaultCenter: LatLng = { lat: 39.7589, lng: -84.1916 }; // Dayton
-
-  // Auto-fit to markers (and user location if set)
-  useEffect(() => {
-    if (!map) return;
-    const pts: [number, number][] = [];
-    if (userLocation) pts.push([userLocation.lat, userLocation.lng]);
-    visiblePartners.forEach((p) => pts.push([p.lat, p.lng]));
-    if (pts.length === 0) return;
-    // @ts-ignore LatLngBoundsLiteral mismatch
-    map.fitBounds(pts, { padding: [40, 40] });
-  }, [map, visiblePartners, userLocation]);
-
-  function focusPartner(p: Partner) {
-    if (!map) return;
-    map.flyTo([p.lat, p.lng], 15, { duration: 0.8 });
-    const m = markerRefs.current[p.id];
-    window.setTimeout(() => m?.openPopup(), 300);
-  }
+  useFocusEffect(mapRef, focusTarget);
 
   return (
-    <div className="card" style={{ padding: 16 }}>
-      {/* desktop grid */}
-      <style jsx>{`
-        @media (min-width: 980px) {
-          .two-col {
-            display: grid;
-            grid-template-columns: 420px 1fr;
-            gap: 16px;
-            align-items: start;
-          }
-        }
-      `}</style>
+    <>
+      <MapContainer
+        center={[center.lat, center.lng]}
+        zoom={12}
+        style={{ height: '100%', width: '100%' }}
+        whenReady={(e) => (mapRef.current = e.target as Map)}
+      >
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
 
-      <div className="two-col">
-        {/* LEFT: Partner list */}
-        <div className="card" style={{ margin: 0 }}>
-          <div className="small" style={{ fontWeight: 700, marginBottom: 6 }}>
-            Partners ({visiblePartners.length})
-          </div>
+        {/* Optional: show user location + radius */}
+        {userLocation && (
+          <>
+            <Marker position={[userLocation.lat, userLocation.lng]}>
+              <Popup>You are here.</Popup>
+            </Marker>
+            {radiusMiles && radiusMiles > 0 && (
+              <Circle
+                center={[userLocation.lat, userLocation.lng]}
+                radius={milesToMeters(radiusMiles)}
+                pathOptions={{ color: '#2563eb', weight: 1 }}
+              />
+            )}
+          </>
+        )}
 
-          {visiblePartners.length === 0 && (
-            <div className="small">No public partners yet.</div>
-          )}
+        {/* Collab lines (polylines) */}
+        {showCollabs &&
+          (collabEdges || []).map((edge) => (
+            <Polyline
+              key={edge.id}
+              positions={[
+                [edge.a.lat, edge.a.lng],
+                [edge.b.lat, edge.b.lng],
+              ]}
+              pathOptions={{
+                color: edge.color || '#ef4444',
+                weight: 3,
+                opacity: 0.8,
+              }}
+              eventHandlers={{
+                click: (e) => {
+                  // Simple popup on click (Leaflet DOM-based)
+                  const map = mapRef.current;
+                  if (!map || !L) return;
+                  L.popup()
+                    .setLatLng(e.latlng)
+                    .setContent(edge.popupHtml)
+                    .openOn(map);
+                },
+              }}
+            />
+          ))}
 
-          <div style={{ display: 'grid', gap: 8 }}>
-            {visiblePartners.map((p) => {
-              const s = p.collab?.status ?? 'active';
-              return (
-                <div
-                  key={p.id}
-                  className="card"
-                  style={{
-                    padding: 12,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: 12,
-                  }}
-                >
-                  <div>
-                    <div style={{ fontWeight: 600 }}>{p.name}</div>
-                    <div className="small" style={{ opacity: 0.8 }}>
-                      {p.address}
-                    </div>
-                    <div className="small" style={{ marginTop: 4 }}>
-                      <span
-                        style={{
-                          display: 'inline-block',
-                          padding: '2px 8px',
-                          borderRadius: 999,
-                          background: '#eef2ff',
-                          border: `1px solid ${statusColor(s)}`,
-                          color: statusColor(s),
-                          fontSize: 12,
-                          fontWeight: 600,
-                          marginRight: 8,
-                        }}
-                      >
-                        {s}
-                      </span>
-                      {p.collab?.popRule && (
-                        <span className="small">Rule: {p.collab.popRule}</span>
-                      )}
-                    </div>
-                  </div>
-
-                  <div style={{ display: 'flex', gap: 8 }}>
-                    <button
-                      className="btn secondary"
-                      onClick={() => focusPartner(p)}
-                      title="Fly to marker and open popup"
-                    >
-                      Focus
-                    </button>
-                    <a
-                      className="btn"
-                      href={directionsUrl(p)}
-                      target="_blank"
-                      rel="noreferrer"
-                      title="Open Google Maps directions"
-                    >
-                      Directions
-                    </a>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* RIGHT: Map */}
-        <div
-          className="card"
-          style={{ height: 580, borderRadius: 12, overflow: 'hidden', margin: 0 }}
-        >
-          <MapContainer
-            center={[defaultCenter.lat, defaultCenter.lng]}
-            zoom={12}
-            style={{ height: '100%', width: '100%' }}
-            ref={(m) => {
-              if (m) {
-                mapRef.current = m;
-                setMap(m);
-              }
+        {/* Partner markers */}
+        {partners.map((p) => (
+          <Marker
+            key={p.id}
+            position={[p.lat, p.lng]}
+            eventHandlers={{
+              click: () => onPartnerClick?.(p.id),
             }}
           >
-            <TileLayer
-              attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> contributors'
-              url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-            />
+            <Popup>
+              <div style={{ minWidth: 200 }}>
+                <div style={{ fontWeight: 700 }}>{p.name}</div>
+                <div className="small">{p.address}</div>
+                {p.collab?.status && (
+                  <div className="small">
+                    <b>Status:</b> {p.collab.status}
+                  </div>
+                )}
+                {p.collab?.popRule && (
+                  <div className="small" style={{ opacity: 0.9 }}>
+                    PoP: {p.collab.popRule}
+                  </div>
+                )}
+                <div style={{ marginTop: 6, display: 'flex', gap: 8 }}>
+                  <a
+                    className="btn secondary"
+                    href={`https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(
+                      p.address || `${p.lat},${p.lng}`
+                    )}`}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Directions
+                  </a>
+                  {p.website && (
+                    <a className="btn ghost" href={p.website} target="_blank" rel="noreferrer">
+                      Website
+                    </a>
+                  )}
+                </div>
+              </div>
+            </Popup>
+          </Marker>
+        ))}
 
-            {/* (Optional) show user location pin */}
-            {userLocation && (
-              <Marker position={[userLocation.lat, userLocation.lng]}>
-                <Popup>You are here</Popup>
-              </Marker>
-            )}
-
-            {visiblePartners.map((p) => {
-              const s = p.collab?.status ?? 'active';
-              return (
-                <Marker
-                  key={p.id}
-                  position={[p.lat, p.lng]}
-                  ref={(ref) =>
-                    (markerRefs.current[p.id] =
-                      ref as unknown as LeafletMarker)
-                  }
-                >
-                  <Popup>
-                    <div style={{ display: 'grid', gap: 6, minWidth: 220 }}>
-                      <div style={{ fontWeight: 700 }}>{p.name}</div>
-                      <div className="small">{p.address}</div>
-
-                      <div
-                        className="small"
-                        style={{
-                          display: 'flex',
-                          gap: 8,
-                          alignItems: 'center',
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: 'inline-block',
-                            padding: '2px 8px',
-                            borderRadius: 999,
-                            background: '#eef2ff',
-                            border: `1px solid ${statusColor(s)}`,
-                            color: statusColor(s),
-                            fontSize: 12,
-                            fontWeight: 600,
-                          }}
-                        >
-                          {s}
-                        </span>
-                        {p.collab?.popRule && (
-                          <span className="small" title="Promo Rule">
-                            • {p.collab.popRule}
-                          </span>
-                        )}
-                      </div>
-
-                      <div style={{ display: 'flex', gap: 8, marginTop: 4 }}>
-                        <a
-                          className="btn small"
-                          href={directionsUrl(p)}
-                          target="_blank"
-                          rel="noreferrer"
-                        >
-                          Get Directions
-                        </a>
-                        {p.website && (
-                          <a
-                            className="btn secondary small"
-                            href={p.website}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            Website
-                          </a>
-                        )}
-                      </div>
-                    </div>
-                  </Popup>
-                </Marker>
-              );
-            })}
-          </MapContainer>
-        </div>
-      </div>
-    </div>
+        <MapClickClosePopup />
+      </MapContainer>
+    </>
   );
 }
